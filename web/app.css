@@ -1,0 +1,14 @@
+/* Resource'a özel küçük yerleşim kuralları. Bileşen stilleri kit/css içinde. */
+:is([data-mh-theme="frontier"], [data-mh-theme="oldwest"]) .x-not-frontier { display: none !important; }
+body:not([data-mh-theme="frontier"]):not([data-mh-theme="oldwest"]) .x-only-frontier { display: none !important; }
+
+/* Oyunun minimap'i sol altta ~300px yer kaplar; yaşam göstergeleri hemen sağına oturur */
+.x-vitals-anchor { left: calc(var(--mh-safe-x) + 290px); bottom: var(--mh-safe-y); align-items: flex-start; justify-content: flex-end; }
+[data-mh-theme="frontier"] .x-vitals-anchor { left: calc(var(--mh-safe-x) + 250px); }
+
+body.is-hidden .mh-screen > :not(#menu-host) { opacity: 0; transition: opacity .25s; }
+.mh-screen > * { transition: opacity .25s; }
+
+/* Menü açıkken sol üstteki görev ve hediyeler yer açar */
+body.x-menu-open #objective-host, body.x-menu-open [data-mh="gifts"] { opacity: 0; }
+#menu-host { top: var(--mh-safe-y); }
