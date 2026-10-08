@@ -20,7 +20,7 @@ RDR2.exe
 |---|---|
 | `StreamEmber\Scripts\StreamEmber.Trainer.RDR2.dll` | Trainer scripti |
 | `StreamEmber\Config\Trainer.ini` | `UiUrl` (boş = yayınlanan sayfa), `MenuKey` (F5). Güncellemede korunur |
-| `StreamEmber\Logs\Trainer.log` | Trainer logu (her oyun oturumunda yeniden başlar; hatalar sınırlı sayıda yazılır) |
+| `StreamEmber\Logs\Trainer.log` | Trainer logu (her oyun oturumunda yeniden başlar, öncekisi `Trainer.previous.log`; hatalar sınırlı sayıda yazılır) |
 | `StreamEmber\Manifests\StreamEmber.Trainer.RDR2.json` | Paket manifest'i: sürüm, commit, bağımlılıklar (`builtAgainst`), dosyalar ve SHA-256 değerleri |
 
 Gereken: RDR2 **DirectX 12** modunda + ScriptHookRDR2 (`dinput8.dll`) + [StreamEmber Runtime (RDR2)](https://github.com/StreamEmberPlatform/rdr2-runtime-scripthook) +
@@ -72,11 +72,12 @@ Performans testi, HUD (tema, bildirim vitrini).
 
 ### RDR2'ye özgü
 
-- Varlıklar `World.GetNearbyPeds/Vehicles` ile (oyunun kendi uzamsal sorgusu) alınır; ScriptHookRDR2'nin varlık
-  havuzları her kare dolaşılmaz. Uzun oyunda/çok NPC öldükten sonra etiketlerin hiç görünmemesi bu havuz
-  çağrılarından kaynaklanıyordu (runtime tarafında da düzeltildi).
-- Ölüm, yeniden doğma, yükleme ve ekran kararması sırasında trainer bekler (oyun dünyayı yüklerken araya girmez);
-  20 saniyeden uzun kalan kararma trainer'ı durdurmaz.
+- Varlıklar `World.GetAllPeds/GetAllVehicles` + mesafe süzgeci ile alınır. Runtime 1.0.9+ havuzları ana script
+  fiber'ında okur; uzun oyunda/çok NPC öldükten sonra etiketlerin kaybolması havuzların başka iş parçacığından
+  okunmasından kaynaklanıyordu (runtime'da düzeltildi). `World.GetNearby*` (itemset sorgusu) kullanılmaz: 1.0.1'de
+  kullanıldı ve oyun açılırken oyun penceresi görüntüsüz kaldı.
+- Ölüm, yeniden doğma, yükleme ve ekran kararması sırasında trainer bekler (oyun sahne değiştirirken araya girmez).
+  Trainer sayfası da ilk kez ancak oyuncu dünyadayken açılır.
 - Atlar/arabalar/kayıklar, kasabalar, karakter modelleri; HUD'da çekirdekler (can/dayanıklılık/dead eye) ve para;
   native referans olarak oyunun 3B çizdiği küreler (RDR2'de `SET_DRAW_ORIGIN` yok).
 

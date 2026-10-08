@@ -1,7 +1,9 @@
 // RDR2 side of the world tags: peds (people, horses, animals) and vehicles (wagons, coaches, boats) around the
 // player, projection, MHud tag content, and game-rendered marker spheres as the sync reference.
-// Entities come from World.GetNearbyPeds/Vehicles (the game's own spatial query), never from ScriptHookRDR2's entity
-// pools: walking the pools every frame from scripts was what made every tag disappear after a long session.
+// Entities come from World.GetAllPeds/GetAllVehicles plus a distance filter. The runtime reads the pools on the main
+// script fiber (StreamEmber RDR2 runtime 1.0.9+); reading them from other threads was what made every tag disappear
+// after a long session. The itemset query (World.GetNearby*: CREATE_ITEMSET / _GET_ENTITIES_NEAR_POINT every frame)
+// is not used: trainer 1.0.1 used it and the game window went blank when the game started.
 using System;
 using System.Collections.Generic;
 using RDR2;
@@ -29,7 +31,7 @@ namespace StreamEmber.Trainers
 
             if (target != WorldTags.Filter.Vehicles)
             {
-                foreach (Ped ped in World.GetNearbyPeds(me, radius))
+                foreach (Ped ped in World.GetAllPeds())
                 {
                     try
                     {
@@ -55,7 +57,7 @@ namespace StreamEmber.Trainers
             }
             if (target != WorldTags.Filter.Peds)
             {
-                foreach (Vehicle veh in World.GetNearbyVehicles(me, radius))
+                foreach (Vehicle veh in World.GetAllVehicles())
                 {
                     try
                     {

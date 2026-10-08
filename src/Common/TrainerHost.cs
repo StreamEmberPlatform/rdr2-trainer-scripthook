@@ -72,7 +72,19 @@ namespace StreamEmber.Trainers
                     if (!s_started)
                     {
                         s_started = true;
-                        File.WriteAllText(path, line, new UTF8Encoding(false));  // new log per game session
+                        // New log per game session; the previous session's log is kept next to it
+                        try
+                        {
+                            if (File.Exists(path))
+                            {
+                                File.Copy(path, Path.Combine(Path.GetDirectoryName(path),
+                                    Path.GetFileNameWithoutExtension(path) + ".previous.log"), true);
+                            }
+                        }
+                        catch
+                        {
+                        }
+                        File.WriteAllText(path, line, new UTF8Encoding(false));
                     }
                     else
                     {

@@ -44,8 +44,6 @@ namespace StreamEmber.Trainers
         private double _avgTickMs;
         private bool _announcedNotInstalled;
         private bool _paused;   // death / respawn / loading / fade: trainer work suspended
-        private long _fadeSinceMs = -1;
-        private const long MaxFadePauseMs = 20000;  // a screen left faded for longer does not pause the trainer
         private readonly TrainerConfig _config;
         private readonly TrainerPage _page;
 
@@ -90,7 +88,6 @@ namespace StreamEmber.Trainers
             }
 
             _tickTimer.Restart();
-            _page.Ensure();
             Guard.Run("Messages", ReadMessages);
 
             Player player = Game.Player;
@@ -111,19 +108,19 @@ namespace StreamEmber.Trainers
 
             // Death, respawn, loading screens and fades: the game is streaming the world and runs its own scripted
             // sequence. World tags read every nearby ped/vehicle with several natives each, so stay out of the way
-            // until the screen is back.
-            // A screen that stays faded (some missions/cutscenes) must not pause the trainer forever.
-            bool fading = Game.IsScreenFadedOut || Game.IsScreenFadingOut || Game.IsScreenFadingIn;
-            long now = _clock.ElapsedMilliseconds;
-            if (!fading) _fadeSinceMs = -1;
-            else if (_fadeSinceMs < 0) _fadeSinceMs = now;
-            bool longFade = fading && now - _fadeSinceMs > MaxFadePauseMs;
-            bool busy = ped == null || !ped.Exists() || ped.IsDead || Game.IsLoading || (fading && !longFade);
+            // until the screen is back (no time limit: trainer 1.0.1 kept working through long fades and the game
+            // window went blank when the game started).
+            bool busy = ped == null || !ped.Exists() || ped.IsDead || Game.IsLoading ||
+                        Game.IsScreenFadedOut || Game.IsScreenFadingOut || Game.IsScreenFadingIn;
             if (busy != _paused)
             {
                 _paused = busy;
                 if (busy) Guard.Run("Tags.Clear", _tags.Clear);
             }
+
+            // The page is opened only once the player is in the world: while the game is still loading and setting up
+            // its swap chain the overlay draws nothing heavier than about:blank.
+            if (!busy) _page.Ensure();
 
             if (!busy) Guard.Run("Trainer", () => _trainer.Tick(ped, dt));
 
