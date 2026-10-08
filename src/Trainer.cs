@@ -1,8 +1,16 @@
-// RDR2 trainer actions and menu tree (same structure as the GTA V trainer).
+// RDR2 trainer: the big overlay menu (web/menu/*), its settings and commands, and the per-tick features.
+//
+// The menu itself lives in the page: catalogs (weapons with the wiki stats and scores, horses, animals, wagons,
+// places), layout and navigation. The game side only executes commands ({ cb: "trainer", data: { op, ... } }) and
+// reports the real state back (trainer:state, trainer:inventory), so the page never shows a value the game does not have.
+// Weapons, horses, animals and wagons are sent by their enum names (eWeapon, eAmmoType, PedHash, VehicleHash): a name
+// the runtime does not know is rejected with a toast instead of calling a native with a bad hash.
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using RDR2;
 using RDR2.Math;
+using RDR2.Native;
 using StreamEmber.Overlay;
 
 namespace StreamEmber.Trainers
@@ -11,444 +19,467 @@ namespace StreamEmber.Trainers
     {
         private readonly WorldTags _tags;
         private readonly HudFeed _hud;
-        private readonly MenuController _menus;
-        private readonly Random _random = new Random();
-        private readonly List<Vehicle> _spawnedVehicles = new List<Vehicle>();
-        private readonly List<Ped> _spawnedPeds = new List<Ped>();
+        private readonly Arsenal _arsenal = new Arsenal();
+        private readonly PlayerFeatures _player = new PlayerFeatures();
+        private readonly WorldControl _world = new WorldControl();
+        private readonly Spawner _spawner = new Spawner();
+        private readonly Settings _settings = new Settings();
+        private readonly CommandRouter _commands = new CommandRouter();
+        private readonly Stopwatch _clock = Stopwatch.StartNew();
+        private long _nextState, _nextCount;
+        private bool _switchedInput;
 
-        public bool GodMode;
         public float CameraSpinDegreesPerSecond;   // 0 = off
         public bool ShowPerfPanel = true;
-        public Menu Root { get; }
+        public bool MenuOpen { get; private set; }
+        public bool MenuMouse = true;                // open the menu in UI input mode (mouse + keyboard to the page)
 
-        public Trainer(WorldTags tags, HudFeed hud, MenuController menus)
+        public Trainer(WorldTags tags, HudFeed hud)
         {
             _tags = tags;
             _hud = hud;
-            _menus = menus;
-            Root = BuildMenus();
+            RegisterSettings();
+            RegisterCommands();
         }
 
-        // ------------------------------------------------------------------ data
+        // ------------------------------------------------------------------ menu
 
-        // X/Y of the town centers; Z is found by probing the ground after the jump
-        private static readonly (string Label, float X, float Y, string Desc)[] Locations =
+        public void ToggleMenu()
         {
-            ("Valentine", -281.0f, 793.0f, "Kalabalık kasaba: etiket stres testi için iyi."),
-            ("Saint Denis", 2635.0f, -1225.0f, "En büyük şehir: çok sayıda yaya ve araba."),
-            ("Rhodes", 1225.0f, -1300.0f, ""),
-            ("Blackwater", -813.0f, -1324.0f, ""),
-            ("Strawberry", -1791.0f, -386.0f, "Dağ kasabası."),
-            ("Annesburg", 2935.0f, 1300.0f, "Maden kasabası."),
-            ("Van Horn", 2985.0f, 565.0f, ""),
-            ("Emerald Ranch", 1420.0f, 315.0f, ""),
-            ("Armadillo", -3685.0f, -2620.0f, "Çöl (New Austin)."),
-            ("Tumbleweed", -5512.0f, -2937.0f, "Çöl (New Austin)."),
-        };
+            if (MenuOpen) CloseMenu(); else OpenMenu();
+        }
 
-        private static readonly (string Label, PedHash Model, string Desc)[] Horses =
+        public void OpenMenu()
         {
-            ("Arap (beyaz)", PedHash.a_c_horse_arabian_white, "En hızlı atlardan"),
-            ("Türkmen (altın)", PedHash.a_c_horse_turkoman_gold, "Dayanıklı savaş atı"),
-            ("Missouri Fox Trotter", PedHash.a_c_horse_missourifoxtrotter_amberchampagne, ""),
-            ("Safkan (siyah)", PedHash.a_c_horse_thoroughbred_blackchestnut, ""),
-        };
-
-        private static readonly (string Label, VehicleHash Model, string Desc)[] Vehicles =
-        {
-            ("Posta arabası", VehicleHash.StageCoach001X, "Atlı posta arabası"),
-            ("Fayton", VehicleHash.Coach2, ""),
-            ("Hafif fayton (buggy)", VehicleHash.Buggy01, ""),
-            ("Yük arabası", VehicleHash.Cart01, ""),
-            ("Ordu erzak arabası", VehicleHash.ArmySupplyWagon, ""),
-            ("Kano", VehicleHash.Canoe, "Suda dene"),
-            ("Sandal", VehicleHash.RowBoat, "Suda dene"),
-            ("Sıcak hava balonu", VehicleHash.HotAirBalloon01, ""),
-        };
-
-        private static readonly (string Label, PedHash Model)[] PlayerModels =
-        {
-            ("Arthur", PedHash.player_zero), ("John", PedHash.player_three), ("Dutch", PedHash.cs_dutch),
-            ("Micah", PedHash.cs_micahbell), ("Javier", PedHash.cs_javierescuella), ("Charles", PedHash.cs_charlessmith),
-            ("Sadie", PedHash.cs_mrsadler), ("Şerif yardımcısı", PedHash.s_m_m_valdeputy_01),
-            ("Kasabalı", PedHash.a_m_m_valtownfolk_01), ("Ayı", PedHash.a_c_bear_01), ("Kurt", PedHash.a_c_wolf),
-            ("Geyik", PedHash.a_c_deer_01),
-        };
-
-        private static readonly PedHash[] Townsfolk =
-        {
-            PedHash.a_m_m_valtownfolk_01, PedHash.a_m_m_valtownfolk_02, PedHash.a_f_m_valtownfolk_01,
-            PedHash.a_m_m_rhdtownfolk_01, PedHash.a_m_m_rhdtownfolk_02, PedHash.a_f_m_rhdtownfolk_01,
-            PedHash.a_m_m_blwtownfolk_01, PedHash.a_f_m_blwtownfolk_01, PedHash.a_m_m_middlesdtownfolk_01,
-            PedHash.a_f_m_middlesdtownfolk_01,
-        };
-
-        private static readonly (string Label, eWeapon Weapon)[] Weapons =
-        {
-            ("Cattleman revolver", eWeapon.RevolverCattleman), ("Volcanic tabanca", eWeapon.PistolVolcanic),
-            ("Karabina (repeater)", eWeapon.RepeaterCarbine), ("Springfield tüfek", eWeapon.RifleSpringfield),
-            ("Pompalı", eWeapon.ShotgunPump), ("Rolling Block", eWeapon.SniperRifleRollingblock),
-            ("Yay", eWeapon.Bow), ("Kement", eWeapon.Lasso),
-        };
-
-        private static readonly string[] Themes = { "frontier", "modern", "neon", "tactical", "minimal" };
-        private static readonly string[] WeatherLabels = { "Güneşli", "Bulutlu", "Yağmurlu", "Fırtınalı", "Sisli", "Karlı" };
-        private static readonly string[] WeatherTypes = { "SUNNY", "CLOUDS", "RAIN", "THUNDERSTORM", "FOG", "SNOW" };
-        private static readonly string[] Hours = { "06:00", "12:00", "18:00", "00:00" };
-        private static readonly string[] RadiusOptions = { "25 m", "50 m", "100 m", "200 m", "400 m" };
-        private static readonly float[] RadiusValues = { 25, 50, 100, 200, 400 };
-        private static readonly string[] MaxOptions = { "25", "50", "100", "200", "400" };
-        private static readonly int[] MaxValues = { 25, 50, 100, 200, 400 };
-        private static readonly string[] RateOptions = { "Her kare", "30 Hz", "15 Hz" };
-        private static readonly int[] RateValues = { 0, 30, 15 };
-        private static readonly string[] TargetOptions = { "Hepsi", "Yalnız insan/hayvan", "Yalnız araba/kayık" };
-        private static readonly string[] PositioningOptions = { "Atlas (kare senkron)", "HTML (MHud/RedM yolu)" };
-        private static readonly string[] DelayOptions = { "0 kare", "1 kare", "2 kare" };
-        private static readonly string[] PredictOptions = { "Kapalı", "1 kare" };
-        private static readonly string[] DistStepOptions = { "1 m (MHud varsayılanı)", "5 m", "10 m" };
-        private static readonly int[] DistStepValues = { 1, 5, 10 };
-        private static readonly string[] SpinOptions = { "Kapalı", "45°/sn", "90°/sn", "180°/sn" };
-        private static readonly float[] SpinValues = { 0, 45, 90, 180 };
-
-        // ------------------------------------------------------------------ menus
-
-        private Menu BuildMenus()
-        {
-            var root = new Menu("StreamEmber Trainer", "RDR2 · Overlay + MHud testi");
-
-            var teleport = new Menu("Işınlanma", "Kasaba seç");
-            teleport.Action("Haritadaki işarete", "Haritada işaret koyduğun noktaya ışınlan.", _ => TeleportToWaypoint());
-            foreach (var loc in Locations)
+            MenuOpen = true;
+            OverlayBridge.Visible = true;
+            if (MenuMouse && OverlayBridge.InputMode != OverlayInputMode.Ui)
             {
-                var l = loc;
-                teleport.Action(l.Label, l.Desc, _ => TeleportTo(l.X, l.Y, l.Label));
+                OverlayBridge.InputMode = OverlayInputMode.Ui;
+                _switchedInput = true;
             }
-            root.Sub("Işınlanma", "Kasabalar ve harita işareti.", teleport);
+            SendMenuState();
+            _nextState = 0;
+            _nextCount = 0;
+        }
 
-            var horses = new Menu("Atlar", "Yanında oluşur ve binersin");
-            foreach (var h in Horses)
-            {
-                var model = h.Model;
-                var label = h.Label;
-                horses.Action(label, h.Desc, _ => SpawnHorse(model, label));
-            }
-            root.Sub("Atlar", "At ver ve bin.", horses);
+        public void CloseMenu()
+        {
+            if (!MenuOpen) return;
+            MenuOpen = false;
+            if (_switchedInput && OverlayBridge.InputMode == OverlayInputMode.Ui) OverlayBridge.InputMode = OverlayInputMode.Game;
+            _switchedInput = false;
+            SendMenuState();
+        }
 
-            var vehicles = new Menu("Arabalar ve kayıklar", "Ver, düzenle");
-            foreach (var v in Vehicles)
-            {
-                var model = v.Model;
-                var label = v.Label;
-                vehicles.Action(label, v.Desc, _ => SpawnVehicle(model, label));
-            }
-            vehicles.Action("Tamir et", "Bindiğin arabayı tamir et.", _ => WithVehicle(v => { v.Repair(); Ui.Toast("success", "Araba tamir edildi"); }));
-            vehicles.Action("Arabayı sil", "", _ => WithVehicle(v => v.Delete()));
-            root.Sub("Arabalar ve kayıklar", "Posta arabası, fayton, kano, balon.", vehicles);
+        /// <summary>Page loaded (again): tell it whether the menu is open.</summary>
+        public void OnPageReady()
+        {
+            SendMenuState();
+            _nextState = 0;
+        }
 
-            var models = new Menu("Oyuncu modeli", "Karakter değiştir");
-            foreach (var m in PlayerModels)
-            {
-                var model = m.Model;
-                var label = m.Label;
-                models.Action(label, model.ToString(), _ => ChangePlayerModel(model, label));
-            }
-            root.Sub("Oyuncu modeli", "Çeteden biri, kasabalı ya da bir hayvan.", models);
+        private void SendMenuState()
+        {
+            Ui.Begin("trainer:menu").BeginObject()
+                .Prop("open", MenuOpen)
+                .Prop("mouse", OverlayBridge.InputMode == OverlayInputMode.Ui)
+                .Prop("version", TrainerPage.ProductVersion ?? "dev")
+                .EndObject();
+            Ui.Send();
+        }
 
-            var player = new Menu("Oyuncu", "Durum");
-            player.Action("Can, dayanıklılık, dead eye", "Barları ve çekirdekleri doldurur.", _ =>
+        public void OnCommand(IDictionary<string, object> data)
+        {
+            if (data == null) return;
+            _commands.Handle(data);
+            _nextState = 0;   // show the effect right away
+        }
+
+        // ------------------------------------------------------------------ settings
+
+        private void RegisterSettings()
+        {
+            Settings s = _settings;
+            s.Bool("player.god", () => _player.God, v => _player.SetGod(v));
+            s.Bool("player.infStamina", () => _player.InfiniteStamina, v => _player.InfiniteStamina = v);
+            s.Bool("player.infDeadEye", () => _player.InfiniteDeadEye, v => _player.InfiniteDeadEye = v);
+            s.Bool("player.neverWanted", () => _player.NeverWanted, v => _player.NeverWanted = v);
+            s.Bool("player.ignored", () => _player.Ignored, v => _player.Ignored = v);
+            s.Bool("player.invisible", () => _player.Invisible, v => _player.Invisible = v);
+            s.Bool("player.noRagdoll", () => _player.NoRagdoll, v => _player.NoRagdoll = v);
+            s.Bool("player.superJump", () => _player.SuperJump, v => _player.SuperJump = v);
+            s.Bool("player.silent", () => _player.Silent, v => _player.Silent = v);
+            s.Num("player.damage", () => _player.DamageMultiplier, v => _player.DamageMultiplier = Clamp(v, 0.1f, 100f));
+            s.Num("player.moveRate", () => _player.MoveRate, v => _player.MoveRate = Clamp(v, 1f, 3f));
+            s.Bool("horse.god", () => _player.HorseGod, v => _player.HorseGod = v);
+            s.Bool("horse.infStamina", () => _player.HorseInfiniteStamina, v => _player.HorseInfiniteStamina = v);
+
+            s.Bool("weapon.infAmmo", () => _arsenal.InfiniteAmmo, v => _arsenal.InfiniteAmmo = v);
+            s.Bool("weapon.infClip", () => _arsenal.InfiniteClip, v => _arsenal.InfiniteClip = v);
+            s.Bool("weapon.noCap", () => _arsenal.NoCapacityLimit, v => _arsenal.NoCapacityLimit = v);
+
+            s.Num("world.density.humans", () => _world.HumanDensity, v => _world.HumanDensity = Clamp(v, 0f, 1f));
+            s.Num("world.density.animals", () => _world.AnimalDensity, v => _world.AnimalDensity = Clamp(v, 0f, 1f));
+            s.Num("world.density.vehicles", () => _world.VehicleDensity, v => _world.VehicleDensity = Clamp(v, 0f, 1f));
+            s.Bool("world.noTrains", () => _world.NoTrains, v => _world.NoTrains = v);
+            s.Bool("world.freezeTime", () => _world.FreezeTime, v => _world.FreezeTime = v);
+            s.Num("world.timeScale", () => _world.TimeScale, v => _world.TimeScale = Clamp(v, 0.05f, 1f));
+            s.Num("world.sweepRadius", () => _world.SweepRadius, v => _world.SweepRadius = Clamp(v, 0f, 5000f));
+            s.Bool("world.protectMission", () => _world.ProtectMission, v => _world.ProtectMission = v);
+            s.Num("world.batch", () => _world.BatchPerFrame, v => _world.BatchPerFrame = (int)Clamp(v, 1f, 500f));
+            s.Bool("world.keepClean", () => _world.KeepClean, v => _world.KeepClean = v);
+            s.Text("world.keepCleanTarget", () => _world.KeepCleanTarget, v =>
             {
-                Ped p = Game.Player.Character;
-                p.Health = p.MaxHealth;
-                for (int i = 0; i < 3; i++) Native.SetCore(p, i, 100);
-                Native.RestoreStamina(p);
-                Ui.Toast("success", "Dolduruldu", "Can, dayanıklılık, dead eye", "heart-f");
+                if (Enum.TryParse(v, out WorldControl.Target _)) _world.KeepCleanTarget = v;
             });
-            player.Toggle("Ölümsüzlük", "Hasar almazsın.", GodMode, it =>
-            {
-                GodMode = it.Check == true;
-                if (!GodMode) Game.Player.Character.IsInvincible = false;
-            });
-            player.Action("Ödül ve arananlığı temizle", "", _ =>
-            {
-                Native.ClearWanted(Game.Player);
-                Game.Player.Bounty = 0;
-                Ui.Toast("info", "Temiz", "Ödül ve arananlık sıfırlandı.", "sheriff");
-            });
-            var weapons = new Menu("Silah ver", "Mermisiyle");
-            foreach (var w in Weapons)
-            {
-                var weapon = w.Weapon;
-                var label = w.Label;
-                weapons.Action(label, "", _ =>
-                {
-                    Game.Player.Character.Weapons.Give((uint)weapon, 100);
-                    Ui.Toast("info", "Silah verildi", label, "revolver");
-                });
-            }
-            weapons.Action("Hepsini ver", "", _ =>
-            {
-                foreach (var w in Weapons) Game.Player.Character.Weapons.Give((uint)w.Weapon, 100);
-                Ui.Toast("info", "Silahlar verildi", null, "rifle");
-            });
-            player.Sub("Silah ver", "Revolver, tüfek, pompalı, yay, kement.", weapons);
-            player.Action("+$100", "Para HUD'unu dener.", _ => Game.Player.Money += 10000);  // cents
-            root.Sub("Oyuncu", "Can, ölümsüzlük, ödül, silah, para.", player);
 
-            var world = new Menu("Dünya", "Zaman, hava, kalabalık");
-            world.Choice("Saat", "←/→ seç, Enter uygula.", Hours, 1, it => Native.SetClockTime(new[] { 6, 12, 18, 0 }[it.Index]));
-            world.Choice("Hava", "←/→ seç, Enter uygula.", WeatherLabels, 0, it => Native.SetWeather(WeatherTypes[it.Index]));
-            world.Action("Kalabalık oluştur", "Çevrene 25 kasabalı ve 6 sürücülü araba ekler (etiket stres testi).", _ => SpawnCrowd(25, 6));
-            world.Action("Oluşturulanları temizle", "Trainer'ın oluşturduğu kişi ve arabaları siler.", _ => Cleanup());
-            root.Sub("Dünya", "Saat, hava, kalabalık.", world);
-
-            var perf = new Menu("Performans testi", "Dünya etiketleri ve gecikme");
-            perf.Toggle("Dünya etiketleri", "Çevredeki kişi, at, hayvan ve arabaların üstünde MHud etiketi.", _tags.Enabled, it =>
+            s.Bool("tags.enabled", () => _tags.Enabled, v =>
             {
-                _tags.Enabled = it.Check == true;
-                if (!_tags.Enabled) _tags.Clear();
+                _tags.Enabled = v;
+                if (!v) _tags.Clear();
             });
-            perf.Choice("Konumlandırma", "Atlas: etiketi oyun kendi karesinde yerleştirir (gecikmesiz). HTML: konum sayfaya " +
-                "gider, MHud DOM'u taşır (RedM yolu, birkaç kare gecikir). Karşılaştırmak için değiştir.", PositioningOptions, 0,
-                it => _tags.Positioning = (WorldTags.Mode)it.Index);
-            perf.Toggle("Native referans noktaları", "Oyunun kendi 3B çizdiği kırmızı küreler (en yakın 30). " +
-                "Etiketin alt ucu kürede durmalı; dönerken aradaki kayma gecikmedir.", _tags.NativeReferences,
-                it => _tags.NativeReferences = it.Check == true);
-            perf.Choice("Senkron gecikmesi (atlas)", "Etiketler kürelerin ÖNÜNDE gidiyorsa 1 kare yap. Kürelerle birebir oturan değeri seç.",
-                DelayOptions, 0, it => OverlayBridge.SpriteDelay = it.Index);
-            perf.Choice("Öngörü (atlas)", "Etiketler kürelerin ARKASINDAN geliyorsa aç: ekran hızından 1 kare ileri tahmin.",
-                PredictOptions, 0, it => _tags.PredictFrames = it.Index);
-            perf.Choice("Mesafe", "Etiket yarıçapı. En büyük maliyet kaldıracı.", RadiusOptions, 2, it => _tags.Radius = RadiusValues[it.Index]);
-            perf.Choice("En fazla etiket", "", MaxOptions, 2, it => _tags.MaxCount = MaxValues[it.Index]);
-            perf.Choice("Gönderim sıklığı (HTML)", "HTML modunda etiket mesajı her karede mi, daha seyrek mi gitsin.", RateOptions, 0, it => _tags.RateHz = RateValues[it.Index]);
-            perf.Choice("Hedef", "", TargetOptions, 0, it => _tags.Target = (WorldTags.Filter)it.Index);
-            perf.Choice("Mesafe yazısı adımı", "MHud mesafe yazısı değişince etiketi baştan çizer. 1 m: her harekette çizim " +
-                "(pahalı), 5-10 m: çoğu güncelleme yalnız konum (ucuz).", DistStepOptions, 1, it => _tags.DistanceStep = DistStepValues[it.Index]);
-            perf.Choice("Kamerayı döndür", "Kamerayı sabit hızla döndürür: senkron testi elle uğraşmadan.", SpinOptions, 0,
-                it => CameraSpinDegreesPerSecond = SpinValues[it.Index]);
-            perf.Toggle("Performans paneli", "", ShowPerfPanel, it => ShowPerfPanel = it.Check == true);
-            perf.Action("Kalabalık oluştur (büyük)", "60 kasabalı + 12 araba. Dikkat: FPS düşebilir.", _ => SpawnCrowd(60, 12));
-            perf.Action("Oluşturulanları temizle", "", _ => Cleanup());
-            root.Sub("Performans testi", "Etiket sayısı, mesafe, sıklık, kamera döndürme.", perf);
+            s.Num("tags.positioning", () => (int)_tags.Positioning, v => _tags.Positioning = v >= 1 ? WorldTags.Mode.Html : WorldTags.Mode.Atlas);
+            s.Bool("tags.refs", () => _tags.NativeReferences, v => _tags.NativeReferences = v);
+            s.Num("tags.delay", () => OverlayBridge.SpriteDelay, v => OverlayBridge.SpriteDelay = (int)Clamp(v, 0, 2));
+            s.Num("tags.predict", () => _tags.PredictFrames, v => _tags.PredictFrames = (int)Clamp(v, 0, 1));
+            s.Num("tags.radius", () => _tags.Radius, v => _tags.Radius = Clamp(v, 10f, 400f));
+            s.Num("tags.max", () => _tags.MaxCount, v => _tags.MaxCount = (int)Clamp(v, 10, 400));
+            s.Num("tags.rate", () => _tags.RateHz, v => _tags.RateHz = (int)Clamp(v, 0, 60));
+            s.Num("tags.target", () => (int)_tags.Target, v => _tags.Target = (WorldTags.Filter)(int)Clamp(v, 0, 2));
+            s.Num("tags.distStep", () => _tags.DistanceStep, v => _tags.DistanceStep = (int)Clamp(v, 1, 10));
+            s.Num("perf.spin", () => CameraSpinDegreesPerSecond, v => CameraSpinDegreesPerSecond = Clamp(v, 0, 360));
+            s.Bool("perf.panel", () => ShowPerfPanel, v => ShowPerfPanel = v);
 
-            var hud = new Menu("HUD", "MHud görünümü");
-            hud.Choice("Tema", "←/→ seç, Enter uygula.", Themes, 0, it =>
+            s.Text("hud.theme", () => _hud.Theme, v =>
             {
-                _hud.Theme = Themes[it.Index];
+                if (Array.IndexOf(new[] { "frontier", "oldwest", "modern", "neon", "tactical", "minimal" }, v) < 0) return;
+                _hud.Theme = v;
                 _hud.PushConfig();
             });
-            hud.Toggle("RDR2 HUD'unu gizle", "Oyunun kendi HUD'unu (çekirdekler, mini harita) kapatır; yalnız MHud kalır.",
-                _hud.HideGameHud, it => _hud.HideGameHud = it.Check == true);
-            hud.Action("Bildirim vitrini", "MHud'un bildirim, hediye, duyuru örnekleri.", _ =>
+            s.Bool("hud.hideGame", () => _hud.HideGameHud, v => _hud.HideGameHud = v);
+        }
+
+        private static float Clamp(float v, float min, float max) => v < min ? min : v > max ? max : v;
+
+        // ------------------------------------------------------------------ commands
+
+        private void RegisterCommands()
+        {
+            CommandRouter c = _commands;
+
+            c.On("set", d =>
+            {
+                object value = null;
+                d.TryGetValue("value", out value);
+                if (!_settings.Apply(d.Str("key"), value)) TrainerLog.Warn("Unknown setting: " + d.Str("key"));
+            });
+            c.On("menu.close", _ => CloseMenu());
+            c.On("state", _ => _nextState = 0);
+
+            // Player
+            c.On("player.fill", _ =>
+            {
+                PlayerFeatures.FillCores(Me);
+                Ui.Toast("success", "Dolduruldu", "Can, dayanıklılık, dead eye", "heart-f");
+            });
+            c.On("player.gold", _ =>
+            {
+                PlayerFeatures.GoldCores(Me);
+                Ui.Toast("success", "Altın çekirdekler", "Can, dayanıklılık ve dead eye güçlendirildi.", "crown-f");
+            });
+            c.On("player.clean", _ =>
+            {
+                PlayerFeatures.Clean(Me);
+                Ui.Toast("info", "Temizlendi", "Kan, çamur ve ıslaklık silindi.", "droplet-f");
+            });
+            c.On("player.clearWanted", _ =>
+            {
+                Player player = Game.Player;
+                int bounty = LAW.GET_BOUNTY(player.Handle);
+                int calmed = PlayerFeatures.ClearWanted(player, true);
+                bool still = PlayerFeatures.IsWanted(player);
+                Ui.Toast(still ? "warn" : "success", "Arananlık temizlendi",
+                    "Ödül $" + (bounty / 100) + " → $0" + (calmed > 0 ? " · " + calmed + " kanun adamı geri çekildi" : "") +
+                    (still ? " · olay hâlâ aktif, tekrar dene" : ""), "sheriff");
+            });
+            c.On("player.money", d =>
+            {
+                int dollars = d.Int("amount");
+                if (dollars == 0 || Math.Abs(dollars) > 1000000) return;
+                Player player = Game.Player;
+                int cents = Math.Max(0, player.Money + dollars * 100);
+                player.Money = cents;
+                Ui.Toast("success", (dollars > 0 ? "+$" : "-$") + Math.Abs(dollars), "Nakit: $" + (cents / 100), "cash");
+            });
+            c.On("player.kill", _ => ENTITY.SET_ENTITY_HEALTH(Me.Handle, 0, 0));
+            c.On("player.outfit", _ => Native.RandomOutfit(Me));
+            c.On("player.model", d =>
+            {
+                string id = d.Str("id");
+                string label = d.Str("label", id);
+                if (!Args.TryEnum(id, out PedHash hash)) { Ui.Toast("danger", "Bilinmeyen model", id); return; }
+                var model = new Model(hash);
+                if (!Spawner.LoadModel(model, label)) return;
+                if (!Game.Player.ChangeModel(model)) { Ui.Toast("danger", "Model değiştirilemedi", label); return; }
+                Script.Wait(0);
+                Native.RandomOutfit(Game.Player.Character);  // without an outfit the new model is invisible
+                STREAMING.SET_MODEL_AS_NO_LONGER_NEEDED((uint)hash);
+                Ui.Toast("success", "Yeni karakter", label, "user");
+            });
+
+            // Weapons
+            c.On("weapon.give", d => GiveWeapon(d.Str("id"), d.Str("label"), d.Int("amount", 999), d.Bool("variants"), d.Bool("equip", true), true));
+            c.On("weapon.remove", d =>
+            {
+                if (!Args.TryEnum(d.Str("id"), out eWeapon w)) return;
+                _arsenal.Remove(Me, (uint)w);
+                Ui.Toast("info", "Silah alındı", d.Str("label", d.Str("id")));
+            });
+            c.On("weapon.giveAll", d =>
+            {
+                int given = 0, ammo = 0, invalid = 0;
+                foreach (string id in d.Strings("ids"))
+                {
+                    if (!Args.TryEnum(id, out eWeapon w)) { invalid++; continue; }
+                    Arsenal.GiveResult r = _arsenal.Give(Game.Player, Me, (uint)w, d.Int("amount", 999), d.Bool("variants"), false);
+                    if (!r.Valid) { invalid++; continue; }
+                    if (r.Given) given++;
+                    ammo += r.AmmoAdded;
+                }
+                Ui.Toast("success", "Silahlar", given + " yeni silah · +" + ammo + " mermi" + (invalid > 0 ? " · " + invalid + " geçersiz" : ""), "rifle");
+                SendInventory(d.Strings("ids"));
+            });
+            c.On("weapon.removeAll", _ =>
+            {
+                Arsenal.RemoveAll(Me);
+                Ui.Toast("warn", "Tüm silahlar alındı", null, "x");
+            });
+            c.On("weapon.clean", _ =>
+            {
+                bool ok = Arsenal.CleanCurrent(Me);
+                Ui.Toast(ok ? "success" : "warn", ok ? "Silah temizlendi" : "Elinde silah yok", ok ? "Kir ve pas sıfırlandı." : null, "tool");
+            });
+            c.On("weapon.inventory", d => SendInventory(d.Strings("ids")));
+            c.On("ammo.give", d =>
+            {
+                string id = d.Str("id");
+                string label = d.Str("label", id);
+                if (!Args.TryEnum(id, out eAmmoType a)) { Ui.Toast("danger", "Bilinmeyen mermi", id); return; }
+                int added = _arsenal.AddAmmoType(Game.Player, Me, (uint)a, d.Int("amount", 100));
+                int total = Arsenal.AmmoByType(Me, (uint)a);
+                Ui.Toast(added > 0 ? "success" : "warn", label, added > 0 ? "+" + added + " · toplam " + total : "Kapasite dolu · " + total, "bullets");
+                SendInventory(d.Strings("ids"));
+            });
+
+            // Horse
+            c.On("horse.spawn", d =>
+            {
+                string id = d.Str("id");
+                if (!Args.TryEnum(id, out PedHash h)) { Ui.Toast("danger", "Bilinmeyen at", id); return; }
+                _spawner.SpawnHorse(h, d.Str("label", id), d.Bool("mount", true), d.Bool("mine", true));
+            });
+            c.On("horse.fill", _ => WithHorse(h => { PlayerFeatures.FillHorse(h); Ui.Toast("success", "At dolduruldu", null, "horse"); }));
+            c.On("horse.clean", _ => WithHorse(h => { PlayerFeatures.Clean(h); Ui.Toast("info", "At temizlendi", null, "horse"); }));
+            c.On("horse.bond", _ => WithHorse(h => { PED._SET_MOUNT_BONDING_LEVEL(h.Handle, 4); Ui.Toast("success", "Bağ seviyesi 4", null, "heart-f"); }));
+            c.On("horse.delete", _ => WithHorse(h =>
+            {
+                if (Me.IsOnMount) TASK.TASK_DISMOUNT_ANIMAL(Me.Handle, 0, 0, 0, 0, 0);
+                Script.Wait(0);
+                h.Delete();
+                Ui.Toast("info", "At silindi");
+            }));
+
+            // Animals, people, vehicles
+            c.On("animal.spawn", d =>
+            {
+                string id = d.Str("id");
+                if (!Args.TryEnum(id, out PedHash h)) { Ui.Toast("danger", "Bilinmeyen hayvan", id); return; }
+                Enum.TryParse(d.Str("mode", "Calm"), true, out Spawner.Behaviour b);
+                _spawner.SpawnAnimals(h, d.Str("label", id), d.Int("count", 1), b);
+            });
+            c.On("vehicle.spawn", d =>
+            {
+                string id = d.Str("id");
+                if (!Args.TryEnum(id, out VehicleHash h)) { Ui.Toast("danger", "Bilinmeyen araç", id); return; }
+                _spawner.SpawnVehicle(h, d.Str("label", id), d.Bool("enter", true));
+            });
+            c.On("vehicle.repair", _ => WithVehicle(v => { v.Repair(); Ui.Toast("success", "Araç tamir edildi"); }));
+            c.On("vehicle.delete", _ => WithVehicle(v => { v.Delete(); Ui.Toast("info", "Araç silindi"); }));
+
+            // Travel
+            c.On("tp.go", d =>
+            {
+                float x = d.Float("x"), y = d.Float("y");
+                if (Math.Abs(x) > 8000 || Math.Abs(y) > 8000) return;
+                bool found = PlayerFeatures.ProbeAndPlace(x, y);
+                string label = d.Str("label", "Konum");
+                Ui.Toast(found ? "info" : "warn", "Işınlandın", found ? label : label + ": zemin bulunamadı, havadasın.", "pin-f");
+            });
+            c.On("tp.waypoint", _ =>
+            {
+                if (!World.IsWaypointActive) { Ui.Toast("warn", "Harita işareti yok", "Önce haritada bir nokta işaretle."); return; }
+                Vector3 wp = World.WaypointPosition;
+                bool found = PlayerFeatures.ProbeAndPlace(wp.X, wp.Y);
+                Ui.Toast(found ? "info" : "warn", "Işınlandın", found ? "Harita işareti" : "Zemin bulunamadı, havadasın.", "pin-f");
+            });
+            c.On("tp.forward", d =>
+            {
+                Entity e = PlayerFeatures.MovingEntity(Me);
+                e.Position = e.Position + Me.ForwardVector * Clamp(d.Float("m", 10f), 1f, 200f);
+            });
+            c.On("tp.up", d =>
+            {
+                Entity e = PlayerFeatures.MovingEntity(Me);
+                e.Position = e.Position + new Vector3(0, 0, Clamp(d.Float("m", 50f), 1f, 1000f));
+            });
+            c.On("tp.save", d =>
+            {
+                _player.Save(d.Int("slot"), PlayerFeatures.MovingEntity(Me).Position);
+                Ui.Toast("info", "Konum kaydedildi", "Yuva " + (d.Int("slot") + 1), "pin-f");
+            });
+            c.On("tp.load", d =>
+            {
+                if (!_player.Load(d.Int("slot"))) Ui.Toast("warn", "Boş yuva", "Önce bu yuvaya konum kaydet.");
+            });
+
+            // World
+            c.On("world.time", d => WorldControl.SetTime(d.Int("hour"), d.Int("minute")));
+            c.On("world.weather", d =>
+            {
+                if (_world.SetWeather(d.Str("id"))) Ui.Toast("info", "Hava", d.Str("label", d.Str("id")), "cloud");
+            });
+            c.On("world.sweep", d =>
+            {
+                if (!Enum.TryParse(d.Str("target"), out WorldControl.Target t)) return;
+                var mode = d.Str("mode") == "kill" ? WorldControl.Mode.Kill : WorldControl.Mode.Delete;
+                _world.StartSweep(t, mode);
+            });
+            c.On("world.crowd", d => _spawner.Crowd((int)Clamp(d.Int("peds", 25), 0, 120), (int)Clamp(d.Int("vehicles", 6), 0, 30)));
+            c.On("world.cleanupSpawned", _ => Ui.Toast("info", "Temizlendi", _spawner.Cleanup() + " varlık silindi."));
+
+            // HUD
+            c.On("hud.demo", _ =>
             {
                 Ui.Begin("mhud:demo").BeginObject().Prop("game", "redm").EndObject();
                 Ui.Send();
             });
-            root.Sub("HUD", "Tema ve vitrin.", hud);
-
-            root.Action("Kapat", "F5 ile tekrar açılır.", _ => _menus.Close());
-            return root;
         }
 
-        // ------------------------------------------------------------------ actions
+        private static Ped Me => Game.Player.Character;
 
-        private static bool LoadModel(Model model, string name)
+        private void GiveWeapon(string id, string label, int amount, bool variants, bool equip, bool toast)
         {
-            if (!model.IsInCdImage || !model.IsValid)
+            label = label ?? id;
+            if (!Args.TryEnum(id, out eWeapon w))
             {
-                Ui.Toast("danger", "Model bulunamadı", name);
-                return false;
-            }
-            if (!model.Request(3000))
-            {
-                Ui.Toast("danger", "Model yüklenemedi", name);
-                return false;
-            }
-            return true;
-        }
-
-        /// <summary>The entity that moves with the player: wagon, horse, or the player itself.</summary>
-        private static Entity MovingEntity(Ped p)
-        {
-            if (p.IsInVehicle) return p.CurrentVehicle;
-            if (p.IsOnMount && p.CurrentMount != null) return p.CurrentMount;
-            return p;
-        }
-
-        private void TeleportTo(float x, float y, string label)
-        {
-            bool found = ProbeAndPlace(x, y);
-            Ui.Toast(found ? "info" : "warn", "Işınlandın", found ? label : label + ": zemin bulunamadı, havadasın.", "pin-f");
-        }
-
-        private void TeleportToWaypoint()
-        {
-            if (!World.IsWaypointActive)
-            {
-                Ui.Toast("warn", "Harita işareti yok", "Önce haritada bir nokta işaretle.");
+                Ui.Toast("danger", "Bilinmeyen silah", id);
                 return;
             }
-            Vector3 wp = World.WaypointPosition;
-            bool found = ProbeAndPlace(wp.X, wp.Y);
-            Ui.Toast(found ? "info" : "warn", "Işınlandın", found ? "Harita işareti" : "Zemin bulunamadı, havadasın.", "pin-f");
+            Arsenal.GiveResult r = _arsenal.Give(Game.Player, Me, (uint)w, amount, variants, equip);
+            if (!toast) return;
+            if (!r.Valid) Ui.Toast("danger", "Geçersiz silah", label);
+            else if (amount <= 0) Ui.Toast("info", r.Given ? "Silah verildi" : "Kuşanıldı", label, "hand");
+            else if (!r.HasAmmo) Ui.Toast("success", r.Given ? "Silah verildi" : "Zaten sende", label, "revolver");
+            else if (r.AmmoAdded > 0) Ui.Toast("success", r.Given ? "Silah verildi" : "Mermi eklendi", label + " · +" + r.AmmoAdded + " (toplam " + r.AmmoTotal + ")", "bullets");
+            else Ui.Toast("warn", r.Given ? "Silah verildi" : "Kapasite dolu", label + " · " + r.AmmoTotal + " · sınırı kaldırmak için 'Kapasite sınırı yok'", "bullets");
+            SendInventory(new List<string> { id });
         }
 
-        // Collision streams in around the new position; probe the ground for up to ~2.5 s
-        private static bool ProbeAndPlace(float x, float y)
+        private void SendInventory(List<string> ids)
         {
-            Entity e = MovingEntity(Game.Player.Character);
-            float z = 1000f;
-            bool found = false;
-            for (int i = 0; i < 50 && !found; i++)
-            {
-                e.Position = new Vector3(x, y, z);
-                Native.RequestCollisionAt(e.Position);
-                Script.Wait(50);
-                found = Native.GroundZ(x, y, 1000f, out float ground);
-                if (found) z = ground + 1f;
-            }
-            e.Position = new Vector3(x, y, found ? z : 300f);
-            return found;
+            Ped me = Me;
+            if (me == null || !me.Exists()) return;
+            JsonWriter w = Ui.Begin("trainer:inventory").BeginObject();
+            _arsenal.WriteInventory(w, me, ids);
+            w.EndObject();
+            Ui.Send();
         }
 
-        private void SpawnHorse(PedHash hash, string label)
+        private static void WithHorse(Action<Ped> action)
         {
-            Ped p = Game.Player.Character;
-            if (p.IsInVehicle)
-            {
-                Ui.Toast("warn", "Arabadasın", "Ata binmek için önce in.");
-                return;
-            }
-            Vector3 pos = p.Position + p.RightVector * 2f;
-            Ped horse = World.CreatePed(hash, pos, p.Heading);
-            if (horse == null)
-            {
-                Ui.Toast("danger", "At oluşturulamadı", label);
-                return;
-            }
-            Native.Mount(p, horse);
-            Track(_spawnedPeds, horse, 8);
-            Ui.Toast("success", "At hazır", label, "horse");
+            Ped horse = PlayerFeatures.PlayerHorse(Game.Player, Me);
+            if (horse == null || !horse.Exists()) { Ui.Toast("warn", "At yok", "Ata bin ya da bir at çağır."); return; }
+            action(horse);
         }
 
-        private void SpawnVehicle(VehicleHash hash, string label)
+        private static void WithVehicle(Action<Vehicle> action)
         {
-            Ped p = Game.Player.Character;
-            Vector3 pos = p.Position + p.ForwardVector * 6f;
-            Vehicle v = World.CreateVehicle(hash, pos, p.Heading + 90f);
-            if (v == null)
-            {
-                Ui.Toast("danger", "Araba oluşturulamadı", label);
-                return;
-            }
-            v.PlaceOnGround();
-            p.SetIntoVehicle(v, eVehicleSeat.Driver);
-            Track(_spawnedVehicles, v, 6);
-            Ui.Toast("success", "Hazır", label, "cart");
-        }
-
-        private void WithVehicle(Action<Vehicle> action)
-        {
-            Vehicle v = Game.Player.Character.CurrentVehicle;
-            if (v == null || !v.Exists())
-            {
-                Ui.Toast("warn", "Arabada değilsin");
-                return;
-            }
+            Vehicle v = Me.CurrentVehicle;
+            if (v == null || !v.Exists()) { Ui.Toast("warn", "Araçta değilsin"); return; }
             action(v);
         }
 
-        private void ChangePlayerModel(PedHash hash, string label)
+        // ------------------------------------------------------------------ state
+
+        private void PushState(Player player, Ped ped)
         {
-            var model = new Model(hash);
-            if (!LoadModel(model, label)) return;
-            bool ok = Game.Player.ChangeModel(model);
-            if (!ok)
+            long now = _clock.ElapsedMilliseconds;
+            if (now >= _nextCount)
             {
-                Ui.Toast("danger", "Model değiştirilemedi", label);
-                return;
-            }
-            Script.Wait(0);
-            Native.RandomOutfit(Game.Player.Character);  // without an outfit the new model is invisible
-            Ui.Toast("success", "Yeni karakter", label, "user");
-        }
-
-        private void SpawnCrowd(int pedCount, int vehicleCount)
-        {
-            Ped player = Game.Player.Character;
-            Vector3 center = player.Position;
-            int peds = 0, vehicles = 0;
-
-            for (int i = 0; i < pedCount; i++)
-            {
-                Vector3 pos = Around(center, 6f, 25f);
-                if (Native.GroundZ(pos.X, pos.Y, center.Z + 20f, out float gz)) pos = new Vector3(pos.X, pos.Y, gz + 0.5f);
-                Ped ped = World.CreatePed(Townsfolk[_random.Next(Townsfolk.Length)], pos, (float)_random.NextDouble() * 360f);
-                if (ped == null) continue;
-                ped.Task.WanderAround();
-                Track(_spawnedPeds, ped, 400);
-                peds++;
+                _nextCount = now + 1000;
+                Guard.Run("World.Count", () => _world.Count(ped));
             }
 
-            for (int i = 0; i < vehicleCount; i++)
-            {
-                Vector3 pos = World.GetNextPositionOnStreet(Around(center, 20f, 60f));
-                VehicleHash hash = _random.Next(2) == 0 ? VehicleHash.StageCoach001X : VehicleHash.Cart01;
-                Vehicle v = World.CreateVehicle(hash, pos, (float)_random.NextDouble() * 360f);
-                if (v == null) continue;
-                Ped driver = v.CreatePedOnSeat(eVehicleSeat.Driver, new Model(Townsfolk[_random.Next(Townsfolk.Length)]));
-                driver?.Task.DriveWander(v, 6f, eDrivingFlags.DF_StopForCars | eDrivingFlags.DF_StopForPeds | eDrivingFlags.DF_SteerAroundPeds);
-                Track(_spawnedVehicles, v, 400);
-                if (driver != null) Track(_spawnedPeds, driver, 400);
-                vehicles++;
-            }
-            Ui.Toast("info", "Kalabalık oluşturuldu", peds + " kişi, " + vehicles + " araba", "users");
-        }
+            int p = player.Handle;
+            JsonWriter w = Ui.Begin("trainer:state").BeginObject();
+            w.Prop("cash", player.Money / 100)
+             .Prop("bounty", LAW.GET_BOUNTY(p) / 100)
+             .Prop("wantedScore", LAW.GET_WANTED_SCORE(p))
+             .Prop("incident", LAW.IS_LAW_INCIDENT_ACTIVE(p))
+             .Prop("health", RdrTagWorld.HealthPercent(ped))
+             .Prop("stamina", Native.StaminaPercent(ped))
+             .Name("cores").BeginObject()
+                .Prop("health", Native.Clamp(Native.Core(ped, 0), 0, 100))
+                .Prop("stamina", Native.Clamp(Native.Core(ped, 1), 0, 100))
+                .Prop("deadeye", Native.Clamp(Native.Core(ped, 2), 0, 100))
+             .EndObject()
+             .Prop("model", Enum.GetName(typeof(PedHash), (uint)ped.Model.Hash) ?? "")
+             .Prop("mounted", ped.IsOnMount)
+             .Prop("inVehicle", ped.IsInVehicle)
+             .Prop("hour", Native.ClockHours()).Prop("minute", Native.ClockMinutes())
+             .Prop("weather", _world.Weather)
+             .Prop("waypoint", World.IsWaypointActive)
+             .Prop("weapon", Enum.GetName(typeof(eWeapon), Arsenal.CurrentWeapon(ped)) ?? "");
 
-        private void Cleanup()
-        {
-            int n = 0;
-            Ped me = Game.Player.Character;
-            Ped myMount = me.CurrentMount;
-            Vehicle myVehicle = me.CurrentVehicle;
-            foreach (Ped p in _spawnedPeds)
-            {
-                if (p == null || !p.Exists() || (myMount != null && p.Handle == myMount.Handle)) continue;
-                p.Delete();
-                n++;
-            }
-            foreach (Vehicle v in _spawnedVehicles)
-            {
-                if (v == null || !v.Exists() || (myVehicle != null && v.Handle == myVehicle.Handle)) continue;
-                v.Delete();
-                n++;
-            }
-            _spawnedPeds.RemoveAll(p => p == null || !p.Exists());
-            _spawnedVehicles.RemoveAll(v => v == null || !v.Exists());
-            Ui.Toast("info", "Temizlendi", n + " varlık silindi.");
-        }
+            Vector3 pos = ped.Position;
+            w.Name("pos").BeginArray().Value(pos.X, "0.0").Value(pos.Y, "0.0").Value(pos.Z, "0.0").EndArray();
 
-        private Vector3 Around(Vector3 center, float minDist, float maxDist)
-        {
-            double angle = _random.NextDouble() * Math.PI * 2;
-            float dist = minDist + (float)_random.NextDouble() * (maxDist - minDist);
-            return center + new Vector3((float)Math.Cos(angle) * dist, (float)Math.Sin(angle) * dist, 0f);
-        }
-
-        private static void Track<T>(List<T> list, T entity, int max) where T : Entity
-        {
-            list.Add(entity);
-            while (list.Count > max)
+            Ped horse = PlayerFeatures.PlayerHorse(player, ped);
+            if (horse != null && horse.Exists())
             {
-                list[0]?.MarkAsNoLongerNeeded();
-                list.RemoveAt(0);
+                w.Name("horse").BeginObject()
+                    .Prop("model", Enum.GetName(typeof(PedHash), (uint)horse.Model.Hash) ?? "")
+                    .Prop("health", RdrTagWorld.HealthPercent(horse))
+                    .Prop("stamina", Native.StaminaPercent(horse))
+                    .Prop("mounted", ped.IsOnMount)
+                    .EndObject();
             }
+
+            w.Name("counts").BeginObject()
+                .Prop("humans", _world.Humans).Prop("animals", _world.Animals).Prop("horses", _world.Horses)
+                .Prop("law", _world.Law).Prop("dead", _world.Dead).Prop("vehicles", _world.Vehicles)
+                .Prop("trains", _world.Trains).Prop("props", _world.Props).Prop("spawned", _spawner.SpawnedCount)
+                .EndObject();
+            w.Name("sweep").BeginObject()
+                .Prop("running", _world.SweepRunning).Prop("done", _world.SweepDone).Prop("total", _world.SweepTotal)
+                .Prop("label", _world.SweepLabel ?? "")
+                .EndObject();
+            w.Name("slots").BeginArray();
+            for (int i = 0; i < 3; i++) w.Value(_player.HasSaved(i));
+            w.EndArray();
+            _settings.Write(w);
+            w.EndObject();
+            Ui.Send();
         }
 
         // ------------------------------------------------------------------ per tick
 
-        public void Tick(Ped player, float frameSeconds)
+        public void Tick(Player player, Ped ped, float frameSeconds)
         {
-            if (GodMode) player.IsInvincible = true;
+            Guard.Run("Player", () => _player.Tick(player, ped));
+            Guard.Run("Arsenal", () => _arsenal.Tick(ped));
+            Guard.Run("World", _world.Tick);
 
             if (CameraSpinDegreesPerSecond > 0)
             {
@@ -456,11 +487,27 @@ namespace StreamEmber.Trainers
                 if (h > 180f) h -= 360f;
                 Native.SetGameplayCamRelativeHeading(h);
             }
+
+            if (MenuOpen && Ui.Ready)
+            {
+                long now = _clock.ElapsedMilliseconds;
+                if (now >= _nextState)
+                {
+                    _nextState = now + 250;
+                    Guard.Run("State", () => PushState(player, ped));
+                }
+            }
         }
+
+        /// <summary>Death, loading, fades: long jobs stop.</summary>
+        public void Suspend() => Guard.Run("World.Suspend", _world.Suspend);
 
         public void Shutdown()
         {
-            Game.Player.Character.IsInvincible = false;
+            Guard.Run("Player.Shutdown", _player.Shutdown);
+            Guard.Run("Arsenal.Shutdown", () => _arsenal.Shutdown(Game.Player.Character));
+            Guard.Run("World.Shutdown", _world.Shutdown);
+            if (MenuOpen) Guard.Run("Menu.Close", CloseMenu);
             _hud.Shutdown();
         }
     }

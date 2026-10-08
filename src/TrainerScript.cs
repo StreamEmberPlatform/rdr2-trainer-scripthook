@@ -1,6 +1,8 @@
 // StreamEmber Trainer (RDR2) — StreamEmber Runtime (RDR2) script driving an MHud UI through the StreamEmber overlay.
 //
-//   F5            open / close the trainer menu (↑ ↓ ← → Enter Backspace, or numpad 8 2 4 6 5 0); Trainer.ini MenuKey
+//   F5            open / close the big trainer menu (Trainer.ini MenuKey). It opens in UI input mode: mouse and keyboard
+//                 go to the page (Trainer.ini MenuMouse=0: the game keeps the mouse, the menu keys are forwarded:
+//                 ↑ ↓ ← → Enter Backspace Esc Q E, or numpad 8 2 4 6 5 0)
 //   F7 / F8       overlay show/hide, mouse+keyboard to the UI (backend hotkeys, see StreamEmber\Config\Overlay.ini)
 //
 // The page is not installed with the game: the trainer opens its published page (GitHub Pages, MHud kit from the
@@ -8,12 +10,16 @@
 // Every part of a tick runs guarded (Guard.Run): an exception is logged to StreamEmber\Logs\Trainer.log and only
 // that part is skipped for that frame; the script itself never dies and never takes the game down.
 //
-// Message flow: C# -> page uses MHud's NUI protocol ({ action, data }, see MHud/integration/mhud/client/main.lua),
-// page -> C# uses MHud callbacks ({ cb, data }: ready, menuSelect, menuClose) plus 'ack' for latency measurement.
-// Same page and protocol as the GTA V trainer (trainers/gtav); only the game side differs.
+// Message flow: C# -> page uses MHud's NUI protocol ({ action, data }, see MHud/integration/mhud/client/main.lua) plus
+// trainer:menu / trainer:state / trainer:inventory for the big menu (web/menu.js); page -> C# uses MHud callbacks
+// ({ cb, data }: ready, ack, atlasReady) and { cb: "trainer", data: { op, ... } } for the menu commands (Trainer.cs).
+// The menu key is read with GetAsyncKeyState every tick: in UI input mode the overlay keeps the key messages from
+// the game window, so a KeyDown event alone would not see F5 to close the menu.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using RDR2;
 using StreamEmber.Overlay;
@@ -32,7 +38,6 @@ namespace StreamEmber.Trainers
 
         private readonly WorldTags _tags = new WorldTags(new RdrTagWorld());
         private readonly HudFeed _hud = new HudFeed();
-        private readonly MenuController _menus = new MenuController();
         private readonly Trainer _trainer;
         private readonly Stopwatch _clock = Stopwatch.StartNew();
         private readonly Stopwatch _tickTimer = new Stopwatch();
@@ -46,6 +51,8 @@ namespace StreamEmber.Trainers
         private bool _paused;   // death / respawn / loading / fade: trainer work suspended
         private readonly TrainerConfig _config;
         private readonly TrainerPage _page;
+        private bool _menuKeyDown;
+        private IntPtr _gameWindow;
 
         public const string DefaultUiUrl = "https://streamemberplatform.github.io/rdr2-trainer-scripthook/";
 
@@ -54,7 +61,7 @@ namespace StreamEmber.Trainers
             _config = TrainerConfig.Load(DefaultUiUrl);
             _page = new TrainerPage(_config.UiUrl);
             TrainerLog.Info("StreamEmber Trainer (RDR2) " + TrainerPage.ProductVersion + ", page " + _page.Url);
-            _trainer = new Trainer(_tags, _hud, _menus);
+            _trainer = new Trainer(_tags, _hud) { MenuMouse = ReadMenuMouse() };
             Tick += OnTick;
             KeyDown += OnKeyDown;
             Aborted += (s, e) => Guard.Run("Shutdown", _trainer.Shutdown);
@@ -101,7 +108,7 @@ namespace StreamEmber.Trainers
             {
                 Game.DisableAllControlsThisFrame();
             }
-            else if (_menus.IsOpen)
+            else if (_trainer.MenuOpen)
             {
                 foreach (eInputType c in MenuBlockedControls) Native.DisableControl(c);
             }
@@ -115,14 +122,20 @@ namespace StreamEmber.Trainers
             if (busy != _paused)
             {
                 _paused = busy;
-                if (busy) Guard.Run("Tags.Clear", _tags.Clear);
+                if (busy)
+                {
+                    Guard.Run("Tags.Clear", _tags.Clear);
+                    _trainer.Suspend();
+                }
             }
+
+            Guard.Run("MenuKey", PollMenuKey);
 
             // The page is opened only once the player is in the world: while the game is still loading and setting up
             // its swap chain the overlay draws nothing heavier than about:blank.
             if (!busy) _page.Ensure();
 
-            if (!busy) Guard.Run("Trainer", () => _trainer.Tick(ped, dt));
+            if (!busy) Guard.Run("Trainer", () => _trainer.Tick(player, ped, dt));
 
             if (Ui.Ready && !busy)
             {
@@ -151,15 +164,10 @@ namespace StreamEmber.Trainers
                         Ui.Ready = true;
                         _tags.OnPageReady();
                         _hud.PushConfig();
-                        _menus.Refresh();
+                        _trainer.OnPageReady();
                         break;
-                    case "menuSelect":
-                        object value = null;
-                        data?.TryGetValue("value", out value);
-                        _menus.OnSelect(data.Str("id"), value);
-                        break;
-                    case "menuClose":
-                        _menus.OnBack();
+                    case "trainer":
+                        _trainer.OnCommand(data);
                         break;
                     case "ack":
                         _tags.OnAck((int)data.Num("seq"), Game.FrameCount);
@@ -218,15 +226,9 @@ namespace StreamEmber.Trainers
 
         private void HandleKey(KeyEventArgs e)
         {
-            if (e.KeyCode == _config.MenuKey)
-            {
-                if (_menus.IsOpen) _menus.Close();
-                else _menus.Open(_trainer.Root);
-                return;
-            }
-
-            // While the UI has real keyboard focus (F8) the page receives keys directly
-            if (!_menus.IsOpen || OverlayBridge.InputMode == OverlayInputMode.Ui) return;
+            // The menu key itself is polled in PollMenuKey. While the UI has the keyboard (UI input mode) the page
+            // receives the keys directly; otherwise the menu keys are forwarded.
+            if (!_trainer.MenuOpen || OverlayBridge.InputMode == OverlayInputMode.Ui) return;
 
             string key = null;
             switch (e.KeyCode)
@@ -237,10 +239,72 @@ namespace StreamEmber.Trainers
                 case Keys.Right: case Keys.NumPad6: key = "ArrowRight"; break;
                 case Keys.Enter: case Keys.NumPad5: key = "Enter"; break;
                 case Keys.Back: case Keys.NumPad0: key = "Backspace"; break;
+                case Keys.Escape: key = "Escape"; break;
+                case Keys.Q: key = "q"; break;
+                case Keys.E: key = "e"; break;
+                case Keys.PageUp: key = "PageUp"; break;
+                case Keys.PageDown: key = "PageDown"; break;
             }
             if (key == null) return;
             Ui.Begin("trainer:key").BeginObject().Prop("key", key).EndObject();
             Ui.Send();
         }
+
+        /// <summary>Menu key edge, read from the keyboard state (works in both input modes), only while the game
+        /// window has the focus.</summary>
+        private void PollMenuKey()
+        {
+            bool down = (GetAsyncKeyState((int)_config.MenuKey) & 0x8000) != 0;
+            if (down && !_menuKeyDown && IsGameFocused())
+            {
+                _trainer.ToggleMenu();
+            }
+            _menuKeyDown = down;
+        }
+
+        private bool IsGameFocused()
+        {
+            if (_gameWindow == IntPtr.Zero) _gameWindow = Process.GetCurrentProcess().MainWindowHandle;
+            IntPtr foreground = GetForegroundWindow();
+            if (foreground == _gameWindow) return true;
+            // The main window handle can change once (splash -> game window): accept our own process' window
+            GetWindowThreadProcessId(foreground, out uint pid);
+            if (pid != (uint)Process.GetCurrentProcess().Id) return false;
+            _gameWindow = foreground;
+            return true;
+        }
+
+        /// <summary>Trainer.ini MenuMouse (RDR2 trainer only): 1 (default) = the menu opens in UI input mode.</summary>
+        private static bool ReadMenuMouse()
+        {
+            try
+            {
+                string path = TrainerPaths.ConfigFile;
+                if (!File.Exists(path)) return true;
+                foreach (string raw in File.ReadAllLines(path))
+                {
+                    string line = raw.Trim();
+                    if (!line.StartsWith("MenuMouse", StringComparison.OrdinalIgnoreCase)) continue;
+                    int eq = line.IndexOf('=');
+                    if (eq < 0) continue;
+                    string v = line.Substring(eq + 1).Trim();
+                    return !(v == "0" || v.Equals("false", StringComparison.OrdinalIgnoreCase));
+                }
+            }
+            catch (Exception ex)
+            {
+                TrainerLog.Error("Trainer.ini MenuMouse", ex);
+            }
+            return true;
+        }
+
+        [DllImport("user32.dll")]
+        private static extern short GetAsyncKeyState(int key);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     }
 }

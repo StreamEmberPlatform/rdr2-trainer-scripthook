@@ -19,7 +19,7 @@ RDR2.exe
 | Dosya | Görev |
 |---|---|
 | `StreamEmber\Scripts\StreamEmber.Trainer.RDR2.dll` | Trainer scripti |
-| `StreamEmber\Config\Trainer.ini` | `UiUrl` (boş = yayınlanan sayfa), `MenuKey` (F5). Güncellemede korunur |
+| `StreamEmber\Config\Trainer.ini` | `UiUrl` (boş = yayınlanan sayfa), `MenuKey` (F5), `MenuMouse` (1). Güncellemede korunur |
 | `StreamEmber\Logs\Trainer.log` | Trainer logu (her oyun oturumunda yeniden başlar, öncekisi `Trainer.previous.log`; hatalar sınırlı sayıda yazılır) |
 | `StreamEmber\Manifests\StreamEmber.Trainer.RDR2.json` | Paket manifest'i: sürüm, commit, bağımlılıklar (`builtAgainst`), dosyalar ve SHA-256 değerleri |
 
@@ -37,13 +37,14 @@ Gereken: RDR2 **DirectX 12** modunda + ScriptHookRDR2 (`dinput8.dll`) + [StreamE
 ## Arayüz (web/)
 
 `web/index.html`, `app.js`, `app.css`: MHud 1.3.0'ın FiveM/RedM sayfası, **değiştirilmeden** (yalnız kit adresleri CDN'e
-çevrildi ve `trainer.css`/`trainer.js` eklendi). `trainer.js` bir adaptördür: `window.streamember` mesajları → FiveM'deki
+çevrildi ve `trainer.css`/`trainer.js`, büyük menü için `catalog.js`/`menu.js`/`menu.css` eklendi). `trainer.js` bir adaptördür: `window.streamember` mesajları → FiveM'deki
 gibi `window` `message` olayı; `MH.post(ad, veri)` → `streamember.post({ cb, data })`. C# scripti MHud'un Lua tarafıyla
 **aynı mesajları** gönderir (`mhud:config`, `mhud:vitals`, `mhud:vehicle`, `mhud:location`, `mhud:heading`, `mhud:wanted`,
 `mhud:money`, `mhud:nametags`, `mhud:menu`, `mhud` RPC).
 
 - Arayüz geliştirme: `web/` klasörünü yerelde yayınla (`npx serve web` → http://127.0.0.1:3000/) ve oyunda
-  `Trainer.ini` → `UiUrl=http://127.0.0.1:3000/`. Normal bir tarayıcıda da açılır (köprü yoksa önizleme kipi).
+  `Trainer.ini` → `UiUrl=http://127.0.0.1:3000/`. Normal bir tarayıcıda da açılır (köprü yoksa önizleme kipi);
+  `?menu=1` büyük menüyü örnek durumla açar.
 - MHud'u güncellemek: yeni sürümün `integration/mhud/html` dosyalarını kopyala, `index.html`'in başındaki dört
   değişikliği koru, CDN adresindeki sürümü değiştir.
 
@@ -51,13 +52,58 @@ gibi `window` `message` olayı; `MH.post(ad, veri)` → `streamember.post({ cb, 
 
 | Tuş | İş |
 |---|---|
-| F5 | Trainer menüsü (↑ ↓ ← → Enter Backspace ya da numpad 8 2 4 6 5 0). Oyun odağı gerekmez. |
+| F5 | Büyük trainer menüsü (overlay'de tam ekran). Fare ve klavye doğrudan menüye gider; F5 / Esc kapatır. |
+| ↑ ↓ ← → Enter | Menüde gezinme (gezinme çubuğu, sekmeler, kartlar, düğmeler); Enter uygular |
+| Q / E · Backspace | Sekme değiştir · sol menüye dön |
 | F7 | Overlay göster/gizle (backend) |
-| F8 | Fare+klavye arayüze (backend). Menüye fareyle tıklanabilir. |
+| F8 | Fare+klavye arayüze (backend) |
 
-Menüler: Işınlanma (11 nokta + harita işareti), Araçlar (ver, hızı koruyarak değiştir, tamir, renk, tam performans,
-sil), Oyuncu modeli (11 karakter), Oyuncu (can/zırh, ölümsüzlük, aranma, silah, para), Dünya (saat, hava, kalabalık),
-Performans testi, HUD (tema, bildirim vitrini).
+`Trainer.ini` → `MenuMouse=0`: menü açılınca fare oyunda kalır, menü tuşları oyun tarafından sayfaya iletilir
+(↑ ↓ ← → Enter Backspace Esc Q E, numpad 8 2 4 6 5 0).
+
+### Büyük menü (web/menu.js, web/catalog.js, web/menu.css)
+
+MHud'un menü kabuğu (`.mh-menu`: başlık, sol gezinme, kartlar, sağda önizleme). Sayfa katalogları ve görünümü taşır;
+oyun tarafı yalnız komutları çalıştırır ve gerçek durumu geri gönderir, sayfa oyunda olmayan bir değeri göstermez.
+
+| Bölüm | İçerik |
+|---|---|
+| Oyuncu | Can/dayanıklılık/Dead Eye, arananlık; doldur, altın çekirdekler, **arananlığı temizle**, temizlen, para; ölümsüzlük, asla aranma, sınırsız dayanıklılık / Dead Eye, herkes görmezden gelsin, görünmezlik, ragdoll kapalı, süper zıplama, sessiz, hasar çarpanı, hareket hızı |
+| Silahlar | Wiki tablosundaki **tüm silahlar** (revolver, tabanca, kollu tüfek, tüfek, keskin nişancı, av tüfeği, yay, dinamit, molotof, bıçak, tomahawk, kement, balta, yakın dövüş, ekipman) + çete üyelerinin silahları; **mermi ve oklar** sekmesinde her mermi türü (ekspres, yüksek hız, yarık uçlu, patlayıcı, yakıcı, tek kurşun, bütün oklar, uçucu dinamit/ateş şişesi...). Kartta puan (S/A/B/C/D), önizlemede hasar/menzil/atış hızı/isabet/doldurma. Sınırsız mermi, şarjör bitmesin, kapasite sınırı yok |
+| Atlar | 24 cins, her cinsin bütün renkleri (PedHash) + çete/hikâye atları; wiki'deki tür değerlerinden puan; bin / yanına getir / benim atım yap; atımı doldur, temizle, bağ 4, sil; ölümsüz at, sınırsız at dayanıklılığı |
+| Karakter | Hikâye karakterleri, kanun adamları, iskelet, vampir, hayvanlar |
+| Canlılar | Yırtıcı, av, çiftlik, köpek, kuş, sürüngen, balık, insan; sakin / saldırgan / takipçi / kaçan; 1-25 adet |
+| Araçlar | Arabalar, tekneler, balon, gatling/top |
+| Işınlanma | Harita işareti, ileri/yukarı, 3 kayıt yuvası, kasabalar |
+| Zaman ve hava | Saat, saati dondur, ağır çekim, 22 hava tipi, nüfus yoğunluğu (insan/hayvan/araba), rastgele tren yok |
+| Dünya temizliği | Oyunun **yüklediği her şey** (yalnız trainer'ın oluşturdukları değil): insanlar, kanun, hayvanlar, atlar, tüm canlılar, arabalar, trenler, objeler, her şey; sil ya da öldür/patlat; alan (tümü / 500-50 m), görev varlıklarını koru, kare başına işlenen sayı (10-500), sürekli temiz tut; canlı sayaçlar; stres testi kalabalığı |
+| Performans testi, HUD | Dünya etiketleri ve gecikme ayarları; MHud teması, oyunun HUD'u |
+
+**Silah puanı:** wiki tablolarındaki değerler (0-4 ölçeği; "temel/yükseltilmiş" çiftlerinde yükseltilmiş değer)
+ağırlıklı ortalama: hasar %32, menzil %20, atış hızı %18, isabet %18, doldurma %12 → 0-100. S ≥ 76, A ≥ 65, B ≥ 55,
+C ≥ 40. Fırlatılanlar ve yakın dövüş yalnız tablodaki sütunlarla hesaplanır. Fil tüfeğinin niteliksel değerleri aynı
+ölçeğe çevrildi. Atlarda: can, dayanıklılık, hız, ivme (Düşük/Orta/Yüksek) %80 + kullanım (Ağır/Standart/Yarış/Elit) %20.
+
+**Görseller:** kartlar wiki makalesinin küçük resmini Fandom API'sinden (CORS, `origin=*`) bir kez alır ve tarayıcıda
+saklar; gelene kadar ya da wiki'ye ulaşılamazsa MHud ikonları görünür. Görsellerin hakları sahiplerine aittir (Red
+Dead Wiki, CC BY-SA); repoya kopyalanmaz.
+
+**Mermi düzeltmesi:** önceki "hepsini ver" silah zaten varsa hiçbir şey yapmıyordu (`WeaponCollection.Give` yalnız
+seçiyor; `GIVE_WEAPON_TO_PED` var olan silaha mermi eklemez, dinamit/molotof gibi fırlatılanlarda sayı = mermi).
+Şimdi silah yalnız yoksa verilir ve mermi her seferinde **türüne göre** eklenir (`_ADD_AMMO_TO_PED_BY_TYPE`); oyun her
+türü çanta kapasitesinde keser, "kapasite sınırı yok" bu sınırı önce yükseltir. Bildirimde eklenen ve toplam sayı yazar.
+
+**Arananlık düzeltmesi:** RDR2'de `CLEAR_PLAYER_WANTED_LEVEL` tek başına bir şey yapmıyor; kanun ödül + arananlık
+skoru + aktif olay/takip ile çalışıyor. "Arananlığı temizle" ödülü, skoru, olayı, geçmiş suçları ve ödül avcısı takibini
+sıfırlar, oyuncuyla çatışan kanun adamlarını geri çeker. "Asla aranma" kanunu kapatır (`_SET_LAW_DISABLED`, dispatch
+kapalı, arananlık çarpanı 0) ve kapatılınca geri açar.
+
+**Dünya temizliği nasıl çalışır:** havuzların anlık listesi alınır (`World.GetAll*`, runtime ana fiber'da okur), sonra
+her karede en fazla *kare başına* kadar varlık işlenir; her varlık ayrı korunur, kaybolan ya da hata veren yalnız
+kendini atlar. Oyuncu, bindiği/son atları, arabası (koşulu atları ve yolcularıyla) ve onlara bağlı her şey korunur.
+Trenler bütün olarak `DELETE_ALL_TRAINS` ile silinir (hareketli trenden tek vagon silmek güvenli değil); objelerde
+bir şeye bağlı olanlar (eldeki silah, şapka, fener) atlanır. Ölüm/yükleme/kararma başlarsa iş durur. Sonuç ve hatalar
+`Trainer.log`'a yazılır.
 
 **Performans testi:** çevredeki tüm yaya ve araçlara MHud isim etiketi (`mhud:nametags`) her karede gönderilir.
 

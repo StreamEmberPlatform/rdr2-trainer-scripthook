@@ -1,0 +1,89 @@
+/* StreamEmber Trainer (RDR2) — big overlay menu on top of MHud's .mh-menu shell. Colors only through MHud tokens. */
+.x-tm { z-index: 1100; }
+.mh-layer--modal { z-index: 1200; }
+.x-tm, .x-tm * { pointer-events: auto; }
+.x-tm__menu { --w: 1480px; --h: 880px; --nav: 230px; --aside: 360px; max-width: calc(100vw - 48px); max-height: calc(100vh - 48px); }
+body.x-tm-open #menu-host, body.x-tm-open .x-hint-anchor { opacity: 0; }
+
+.x-main { overflow: hidden; }
+.x-main > .mh-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.x-pad { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+
+/* Focus ring for keyboard navigation (also follows the mouse) */
+.x-tm [data-f] { outline: none; }
+.x-tm .is-focus { box-shadow: 0 0 0 2px var(--mh-accent), var(--mh-accent-glow); border-radius: var(--mh-r-2); position: relative; z-index: 1; }
+.x-tm .mh-nav__item.is-focus { box-shadow: inset 0 0 0 2px var(--mh-accent); border-radius: 0; }
+.x-tm .mh-card.is-focus { transform: translateY(-2px); }
+
+/* Tabs and toolbar */
+.x-tabs { padding: 0 16px; flex-wrap: wrap; row-gap: 4px; }
+.x-tabs button { display: inline-flex; align-items: center; gap: 6px; }
+.x-tabs .mh-i { width: 15px; height: 15px; }
+.x-toolbar { flex-wrap: wrap; row-gap: 8px; }
+.x-toolbar .x-gap, .x-gap { flex: 1; }
+.x-toolbar .mh-kicker { margin-left: 6px; }
+.x-horse { font-size: 13px; color: var(--mh-text-2); font-weight: 600; }
+
+.x-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 16px 0; }
+.x-chips__note { font-size: 12px; color: var(--mh-text-3); margin-left: auto; }
+.x-chip { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+.x-chip .x-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mh-track); box-shadow: inset 0 0 0 1px var(--mh-line-strong); }
+.x-chip.is-on { color: var(--mh-text); border-color: var(--mh-accent); background: var(--mh-accent-soft); }
+.x-chip.is-on .x-dot { background: var(--mh-accent); box-shadow: var(--mh-accent-glow); }
+
+/* Cards */
+.x-cards { flex: 1; min-height: 0; overflow-y: auto; grid-auto-rows: max-content; }
+.x-card .mh-card__art { height: 120px; }
+.x-card .mh-card__name { white-space: normal; line-height: 1.25; }
+.x-card .mh-card__sub { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.5em; }
+.x-card.is-owned::after { content: ""; position: absolute; right: 10px; top: 10px; width: 9px; height: 9px; border-radius: 50%;
+  background: rgb(var(--mh-success-rgb)); box-shadow: 0 0 8px rgb(var(--mh-success-rgb) / .7); }
+.x-art { display: grid; place-items: center; width: 100%; height: 100%; }
+.x-art > img { max-width: 88%; max-height: 92%; object-fit: contain; filter: drop-shadow(0 6px 10px rgb(0 0 0 / .55)); }
+.x-art > .mh-weapon-art { width: 78%; color: var(--mh-text); filter: drop-shadow(0 6px 10px rgb(0 0 0 / .6)); }
+.x-art > .mh-i { width: 46px; height: 46px; color: var(--mh-text); }
+.x-price { font-family: var(--mh-font-num); font-size: 12px; color: var(--mh-text-3); }
+.x-own { font-size: 13px; }
+.x-score { font-family: var(--mh-font-num); font-weight: 700; z-index: 2; }
+
+/* Aside */
+.x-preview { height: 200px; flex: none; }
+.x-preview .x-art > img { max-height: 180px; }
+.x-preview .x-art > .mh-weapon-art { width: 70%; }
+.x-preview .x-art > .mh-i { width: 72px; height: 72px; }
+.x-kv { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--mh-text-3); }
+.x-kv b { color: var(--mh-text); font-family: var(--mh-font-num); font-weight: 600; text-align: right; }
+.x-aside-btns { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
+.x-src { font-size: 11px; line-height: 1.4; color: var(--mh-text-4, var(--mh-text-3)); }
+.x-q { font-size: 11px !important; }
+.x-aside .mh-statline { grid-template-columns: 96px 1fr 52px; }
+.x-coats { display: flex; flex-wrap: wrap; gap: 6px; max-height: 150px; overflow-y: auto; padding: 2px; }
+.x-coat { cursor: pointer; font-size: 12px; }
+.x-coat.is-active { border-color: var(--mh-accent); background: var(--mh-accent-soft); color: var(--mh-text); }
+
+/* Boxes, tiles, rows */
+.x-box { display: flex; flex-direction: column; gap: 10px; }
+.x-box .mh-box__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.x-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.x-tile b { font-size: 18px; }
+.x-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.x-btns--end { justify-content: flex-end; margin-top: 6px; }
+.x-btns--wx .mh-btn { min-width: 150px; justify-content: flex-start; }
+.x-btns .mh-btn .mh-i, .x-toolbar .mh-btn .mh-i, .x-aside-btns .mh-btn .mh-i { width: 16px; height: 16px; }
+.x-wx.is-active { border-color: var(--mh-accent); background: var(--mh-accent-soft); color: var(--mh-text); }
+.x-rows { display: flex; flex-direction: column; }
+.x-row { cursor: pointer; }
+.x-row[data-set]:hover { background: var(--mh-raise); }
+.x-row .mh-setting__control.x-wide { width: auto; }
+.x-row .mh-toggle { pointer-events: none; }
+.x-seg button { white-space: nowrap; }
+.x-list .mh-row { cursor: pointer; }
+.x-trow { cursor: default !important; }
+.x-trow .mh-row__meta { display: flex; gap: 8px; }
+.x-slot-row { display: grid; grid-template-columns: 80px 1fr auto auto; align-items: center; gap: 10px; padding: 6px 0; }
+.x-clock { font-family: var(--mh-font-num); font-size: 20px; }
+.x-sweep { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--mh-line); border-radius: var(--mh-r-3); background: var(--mh-raise); }
+.x-bounty.is-hot { color: var(--mh-danger); }
+.x-foot-note { font-size: 11px; color: var(--mh-text-3); }
+
+@media (max-height: 900px) { .x-tm__menu { --h: 820px; } }
