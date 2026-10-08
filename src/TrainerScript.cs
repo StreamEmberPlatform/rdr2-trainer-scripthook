@@ -110,8 +110,8 @@ namespace StreamEmber.Trainers
             }
 
             // Death, respawn, loading screens and fades: the game is streaming the world and runs its own scripted
-            // sequence. World tags scan every ped/vehicle with several natives each (each one a thread hand-off in
-            // ScriptHookRDRDotNet), so stay out of the way until the screen is back.
+            // sequence. World tags read every nearby ped/vehicle with several natives each, so stay out of the way
+            // until the screen is back.
             // A screen that stays faded (some missions/cutscenes) must not pause the trainer forever.
             bool fading = Game.IsScreenFadedOut || Game.IsScreenFadingOut || Game.IsScreenFadingIn;
             long now = _clock.ElapsedMilliseconds;
