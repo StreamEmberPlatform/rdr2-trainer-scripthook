@@ -1,7 +1,8 @@
 // Hosting pieces shared by the StreamEmber trainers (same file in gtav-trainer-scripthook and rdr2-trainer-scripthook):
 //   TrainerLog     <game>\StreamEmber\Logs\Trainer.log, errors throttled
 //   TrainerConfig  <game>\StreamEmber\Config\Trainer.ini (UiUrl, MenuKey)
-//   TrainerPage    asks the overlay to open the trainer page (the overlay ships no page; ours is on the CDN)
+//   TrainerPage    the trainer page in the overlay (the overlay ships no page; ours is on the CDN) and whether it is
+//                  the current page (other mods, e.g. the chaos mod, have their own)
 //   Guard          runs one part of a tick; an exception is logged and that part is skipped for this frame only
 using System;
 using System.Collections.Generic;
@@ -139,9 +140,16 @@ namespace StreamEmber.Trainers
     }
 
     /// <summary>Opens the trainer page in the overlay once the overlay runs.</summary>
+    /// <summary>
+    /// The overlay has one page and one message queue for every script, and other StreamEmber mods (the chaos mod)
+    /// have pages of their own: a script reads messages and sends only while its own page is the current one
+    /// (<see cref="IsCurrent"/>). At startup the page is opened only if the overlay shows nothing yet; the menu key
+    /// takes the overlay back (<see cref="Claim"/>).
+    /// </summary>
     internal sealed class TrainerPage
     {
         private readonly string _url;
+        private readonly string _key;
         private bool _requested;
 
         public TrainerPage(string url)
@@ -151,6 +159,7 @@ namespace StreamEmber.Trainers
             _url = url.IndexOf('?') < 0 && url.StartsWith("http", StringComparison.OrdinalIgnoreCase) && version != null
                 ? url + "?v=" + Uri.EscapeDataString(version)
                 : url;
+            _key = Key(_url);
         }
 
         public string Url => _url;
@@ -165,22 +174,60 @@ namespace StreamEmber.Trainers
             }
         }
 
-        /// <summary>Call every tick while the overlay is ready. Returns true once the page was requested.</summary>
+        /// <summary>True while the overlay shows the trainer page (any version of it).</summary>
+        public bool IsCurrent => Key(OverlayBridge.Url) == _key;
+
+        /// <summary>Call every tick once the player is in the world. Opens the page if the overlay is still blank;
+        /// another mod's page is left alone (the menu key calls <see cref="Claim"/>).</summary>
         public void Ensure()
         {
             if (_requested) return;
             _requested = true;
-            TrainerLog.Info("Opening " + _url);
-            if (!OverlayBridge.LoadUrl(_url))
+            string current = OverlayBridge.Url;
+            if (string.IsNullOrEmpty(current) || current.Equals("about:blank", StringComparison.OrdinalIgnoreCase))
+            {
+                TrainerLog.Info("Opening " + _url);
+                OverlayBridge.LoadUrl(_url);
+            }
+            else if (Key(current) == _key)
             {
                 // Already open (scripts reloaded while the game kept running): ask the page to announce itself again
-                Ui.Begin("trainer:hello").BeginObject().EndObject();
-                Ui.Send();
+                Hello();
             }
+            else
+            {
+                TrainerLog.Info("The overlay shows " + current + "; the trainer page opens with the menu key");
+            }
+        }
+
+        /// <summary>Opens the trainer page now (menu key while another page is shown).</summary>
+        public void Claim()
+        {
+            _requested = true;
+            TrainerLog.Info("Opening " + _url + " (overlay showed " + (OverlayBridge.Url ?? "nothing") + ")");
+            if (!OverlayBridge.LoadUrl(_url)) Hello();
         }
 
         /// <summary>Overlay went away (should not happen) or the script restarts: request again next time.</summary>
         public void Reset() => _requested = false;
+
+        private static void Hello()
+        {
+            Ui.Begin("trainer:hello").BeginObject().EndObject();
+            Ui.Send();
+        }
+
+        /// <summary>URL without query, fragment and trailing slash, lower case: ?v= and in-page anchors do not matter.</summary>
+        public static string Key(string url)
+        {
+            if (string.IsNullOrEmpty(url)) return string.Empty;
+            string key = url.Trim();
+            int cut = key.IndexOfAny(new[] { '?', '#' });
+            if (cut >= 0) key = key.Substring(0, cut);
+            key = key.TrimEnd('/');
+            if (key.EndsWith("/index.html", StringComparison.OrdinalIgnoreCase)) key = key.Substring(0, key.Length - 11);
+            return key.ToLowerInvariant();
+        }
     }
 
     internal static class Guard

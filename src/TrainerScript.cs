@@ -95,7 +95,18 @@ namespace StreamEmber.Trainers
             }
 
             _tickTimer.Restart();
-            Guard.Run("Messages", ReadMessages);
+            if (_page.IsCurrent)
+            {
+                Guard.Run("Messages", ReadMessages);
+            }
+            else if (Ui.Ready || _trainer.MenuOpen)
+            {
+                // Another mod (the chaos mod) loaded its page: stop sending until the menu key brings ours back
+                TrainerLog.Info("The overlay switched to " + OverlayBridge.Url + "; trainer page detached");
+                Ui.Ready = false;
+                _trainer.DetachMenu();
+                Guard.Run("Tags.Clear", _tags.Clear);
+            }
 
             Player player = Game.Player;
             Ped ped = player.Character;
@@ -160,7 +171,10 @@ namespace StreamEmber.Trainers
                 switch (msg.Str("cb"))
                 {
                     case "ready":
-                        // app.js loaded (first time or after a page reload)
+                        // app.js loaded (first time or after a page reload); a late "ready" of another mod's page
+                        // (it names its app) does not count
+                        string app = data?.Str("app");
+                        if (app != null && app != "trainer") break;
                         Ui.Ready = true;
                         _tags.OnPageReady();
                         _hud.PushConfig();
@@ -257,6 +271,12 @@ namespace StreamEmber.Trainers
             bool down = (GetAsyncKeyState((int)_config.MenuKey) & 0x8000) != 0;
             if (down && !_menuKeyDown && IsGameFocused())
             {
+                if (!_trainer.MenuOpen && !_page.IsCurrent)
+                {
+                    // Another mod's page is shown: bring ours back. Messages wait in the overlay until it has loaded;
+                    // "ready" then sends the menu state again.
+                    _page.Claim();
+                }
                 _trainer.ToggleMenu();
             }
             _menuKeyDown = down;

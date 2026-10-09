@@ -72,6 +72,13 @@ namespace StreamEmber.Trainers
             SendMenuState();
         }
 
+        /// <summary>Another mod loaded its page: it owns the overlay and the input mode now, forget the open menu.</summary>
+        public void DetachMenu()
+        {
+            MenuOpen = false;
+            _switchedInput = false;
+        }
+
         /// <summary>Page loaded (again): tell it whether the menu is open.</summary>
         public void OnPageReady()
         {

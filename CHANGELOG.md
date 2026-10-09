@@ -4,10 +4,15 @@ Sürümler `VERSION` (major.minor) + commit sayısı (patch) ile otomatik verili
 Burada yalnız kayda değer değişiklikler tutulur.
 
 ## 1.1
+- Overlay paylaşımı: trainer yalnız kendi sayfası açıkken mesaj okur/gönderir. Başka bir mod (kaos modu) kendi sayfasını
+  yüklediğinde trainer geri çekilir; menü tuşu trainer sayfasını yeniden yükleyip menüyü açar. Açılışta sayfa yalnız
+  overlay boşsa yüklenir.
 - **Büyük overlay menüsü** (F5): MHud menü kabuğu; fare ve klavyeyle (ok tuşlarıyla bölge içi gezinme, Q/E sekme).
   Sol üstteki klasik liste RDR2 trainer'ında kullanılmıyor. `Trainer.ini` → `MenuMouse`.
 - Silahlar: wiki tablosundaki bütün silahlar, fırlatılanlar, yakın dövüş, ekipman ve her mermi/ok türü; tablo değerlerinden
   puan (S-D), önizlemede istatistikler, wiki görselleri (yedek: MHud ikonları).
+  Wiki görselleri Referer'sız isteniyor (Fandom başka sitelere gri yer tutucu veriyordu); resmi olmayan başlık aranıyor,
+  resim yüklenene kadar ve yüklenemezse ikon kalıyor.
 - **Düzeltme:** silah zaten varken "ver" mermi eklemiyordu; dinamit/molotof sayısı artmıyordu. Mermi artık türüne göre
   ekleniyor, kapasite sınırı kaldırılabiliyor; sınırsız mermi, şarjör bitmesin.
 - **Düzeltme:** arananlık temizleme çalışmıyordu (yalnız `CLEAR_PLAYER_WANTED_LEVEL`). Ödül, skor, olay, geçmiş suçlar
